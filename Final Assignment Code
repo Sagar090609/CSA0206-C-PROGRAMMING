@@ -1,0 +1,390 @@
+/* ============================================================
+   Smart Laboratory Equipment Booking and Resource Management
+   System
+   Course: CSA0201 - C Programming
+   ============================================================ */
+ 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+ 
+#define MAX_BOOKINGS 100
+#define MAX_EQUIPMENT 20
+#define DATA_FILE "bookings.dat"
+ 
+/* ---------- Nested Structures ---------- */
+ 
+/* Equipment details are nested inside each Booking record so that
+   every booking carries a full, self-contained snapshot of the
+   equipment it uses (unit id, name, capacity, cumulative usage,
+   current status). */
+typedef struct {
+    int  equipmentID;
+    char name[40];
+    int  maxHours;         /* maximum permitted operating hours    */
+    int  allocatedHours;   /* cumulative hours already booked       */
+    char status[15];       /* "Available" / "In Use" / "FullyBooked"*/
+} Equipment;
+ 
+typedef struct {
+    int      bookingID;
+    char     studentGroup[40];
+    Equipment equipmentInfo;   /* NESTED structure                  */
+    int      priority;         /* 1 = highest, 5 = lowest            */
+    char     bookingDate[11];  /* DD-MM-YYYY                         */
+    int      requestedHours;
+    char     status[15];       /* "Pending" / "Scheduled" / "Completed" */
+} Booking;
+ 
+/* ---------- Function Prototypes (all take pointers, no globals) ---------- */
+int  getNextBookingID(void);
+void addBooking(Booking *bookings, int *count);
+int  checkCapacity(Equipment *eq, int requestedHours);
+void updateEquipmentStatus(Equipment *eq);
+int  searchBookingByID(Booking *bookings, int count, int id);
+void sortByPriority(Booking *bookings, int count);
+void sortByDate(Booking *bookings, int count);
+void displayBooking(Booking *b);
+void displayAllBookings(Booking *bookings, int count);
+void saveBookingsToFile(Booking *bookings, int count);
+int  loadBookingsFromFile(Booking *bookings);
+void generateUtilizationReport(Booking *bookings, int count);
+void displayMenu(void);
+ 
+/* ============================================================
+   getNextBookingID
+   Uses a STATIC local variable as the ID counter.
+ 
+   Storage-class justification: the counter is declared 'static'
+   so its value is retained BETWEEN successive calls to this
+   function, without exposing it as a global variable to the rest
+   of the program (encapsulation) and without recomputing it from
+   the file every time a new booking is created.
+   If it were declared 'auto' (an ordinary local variable) instead,
+   it would be re-initialised to its starting value on every call,
+   so every new booking would be assigned the same duplicate ID
+   (e.g. every new record becoming Booking #1), breaking uniqueness
+   and silently corrupting search/sort/file operations that rely on
+   bookingID being unique.
+   ============================================================ */
+int getNextBookingID(void) {
+    static int nextID = 1000;   /* retains value across calls */
+    return nextID++;
+}
+ 
+/* ---------- Capacity validation ---------- */
+int checkCapacity(Equipment *eq, int requestedHours) {
+    if (requestedHours <= 0) return 0;
+    if (eq->allocatedHours + requestedHours > eq->maxHours) {
+        return 0;   /* would exceed the unit's max operating hours */
+    }
+    return 1;       /* booking can be accommodated */
+}
+ 
+/* ---------- Equipment status classification ---------- */
+void updateEquipmentStatus(Equipment *eq) {
+    double pct = (double)eq->allocatedHours / (double)eq->maxHours * 100.0;
+    if (eq->allocatedHours == 0) {
+        strcpy(eq->status, "Available");
+    } else if (pct >= 90.0) {
+        strcpy(eq->status, "FullyBooked");
+    } else {
+        strcpy(eq->status, "In Use");
+    }
+}
+ 
+/* ---------- Add a new booking ---------- */
+void addBooking(Booking *bookings, int *count) {
+    if (*count >= MAX_BOOKINGS) {
+        printf("Booking list is full.\n");
+        return;
+    }
+ 
+    Booking *b = &bookings[*count];   /* pointer to the new slot */
+    b->bookingID = getNextBookingID();
+ 
+    printf("Enter student group name: ");
+    scanf(" %39[^\n]", b->studentGroup);
+ 
+    printf("Enter equipment ID: ");
+    scanf("%d", &b->equipmentInfo.equipmentID);
+    printf("Enter equipment name: ");
+    scanf(" %39[^\n]", b->equipmentInfo.name);
+    printf("Enter equipment max permitted operating hours: ");
+    scanf("%d", &b->equipmentInfo.maxHours);
+    printf("Enter equipment hours already allocated (0 if new unit): ");
+    scanf("%d", &b->equipmentInfo.allocatedHours);
+ 
+    printf("Enter requested hours for this booking: ");
+    scanf("%d", &b->requestedHours);
+ 
+    if (!checkCapacity(&b->equipmentInfo, b->requestedHours)) {
+        printf("Request REJECTED: exceeds equipment's remaining "
+               "available hours (allocated %d / max %d, requested %d).\n",
+               b->equipmentInfo.allocatedHours, b->equipmentInfo.maxHours,
+               b->requestedHours);
+        return;   /* booking not added -> avoids double-booking */
+    }
+ 
+    printf("Enter priority (1=highest .. 5=lowest): ");
+    scanf("%d", &b->priority);
+    printf("Enter booking date (DD-MM-YYYY): ");
+    scanf(" %10[^\n]", b->bookingDate);
+ 
+    b->equipmentInfo.allocatedHours += b->requestedHours;
+    updateEquipmentStatus(&b->equipmentInfo);
+    strcpy(b->status, "Scheduled");
+ 
+    (*count)++;
+    printf("Booking accepted. Booking ID = %d, Equipment status = %s\n",
+           b->bookingID, b->equipmentInfo.status);
+}
+ 
+/* ---------- Linear search by Booking ID ---------- */
+int searchBookingByID(Booking *bookings, int count, int id) {
+    for (int i = 0; i < count; i++) {
+        if ((bookings + i)->bookingID == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+ 
+/* ---------- Sort: priority ascending (1 = highest first) ---------- */
+void sortByPriority(Booking *bookings, int count) {
+    for (int i = 0; i < count - 1; i++) {
+        int minIdx = i;
+        for (int j = i + 1; j < count; j++) {
+            if ((bookings + j)->priority < (bookings + minIdx)->priority) {
+                minIdx = j;
+            }
+        }
+        if (minIdx != i) {
+            Booking temp = *(bookings + i);
+            *(bookings + i) = *(bookings + minIdx);
+            *(bookings + minIdx) = temp;
+        }
+    }
+}
+ 
+/* ---------- Sort: booking date (string compare, DD-MM-YYYY reordered) ---------- */
+static void dateKey(const char *date, char *key /* YYYYMMDD */) {
+    /* date is DD-MM-YYYY -> build a YYYYMMDD sortable key */
+    char dd[3], mm[3], yyyy[5];
+    strncpy(dd, date, 2);   dd[2] = '\0';
+    strncpy(mm, date + 3, 2); mm[2] = '\0';
+    strncpy(yyyy, date + 6, 4); yyyy[4] = '\0';
+    sprintf(key, "%s%s%s", yyyy, mm, dd);
+}
+ 
+void sortByDate(Booking *bookings, int count) {
+    char keyI[9], keyJ[9], keyMin[9];
+    for (int i = 0; i < count - 1; i++) {
+        int minIdx = i;
+        dateKey((bookings + minIdx)->bookingDate, keyMin);
+        for (int j = i + 1; j < count; j++) {
+            dateKey((bookings + j)->bookingDate, keyJ);
+            if (strcmp(keyJ, keyMin) < 0) {
+                minIdx = j;
+                strcpy(keyMin, keyJ);
+            }
+        }
+        (void)keyI;
+        if (minIdx != i) {
+            Booking temp = *(bookings + i);
+            *(bookings + i) = *(bookings + minIdx);
+            *(bookings + minIdx) = temp;
+        }
+    }
+}
+ 
+/* ---------- Display helpers ---------- */
+void displayBooking(Booking *b) {
+    printf("-----------------------------------------------------\n");
+    printf("Booking ID    : %d\n", b->bookingID);
+    printf("Group         : %s\n", b->studentGroup);
+    printf("Equipment     : [%d] %s\n", b->equipmentInfo.equipmentID,
+           b->equipmentInfo.name);
+    printf("Hours (req)   : %d  | Allocated: %d / Max: %d\n",
+           b->requestedHours, b->equipmentInfo.allocatedHours,
+           b->equipmentInfo.maxHours);
+    printf("Equip. Status : %s\n", b->equipmentInfo.status);
+    printf("Priority      : %d\n", b->priority);
+    printf("Date          : %s\n", b->bookingDate);
+    printf("Status        : %s\n", b->status);
+}
+ 
+void displayAllBookings(Booking *bookings, int count) {
+    if (count == 0) {
+        printf("No bookings to display.\n");
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        displayBooking(bookings + i);
+    }
+    printf("-----------------------------------------------------\n");
+}
+ 
+/* ---------- File handling: persistence across program runs ---------- */
+void saveBookingsToFile(Booking *bookings, int count) {
+    FILE *fp = fopen(DATA_FILE, "wb");
+    if (!fp) {
+        printf("Error: could not open file for writing.\n");
+        return;
+    }
+    fwrite(&count, sizeof(int), 1, fp);
+    fwrite(bookings, sizeof(Booking), count, fp);
+    fclose(fp);
+    printf("Saved %d booking record(s) to '%s'.\n", count, DATA_FILE);
+}
+ 
+int loadBookingsFromFile(Booking *bookings) {
+    FILE *fp = fopen(DATA_FILE, "rb");
+    int count = 0;
+    if (!fp) {
+        return 0;   /* no file yet -> start with an empty list */
+    }
+    fread(&count, sizeof(int), 1, fp);
+    fread(bookings, sizeof(Booking), count, fp);
+    fclose(fp);
+    return count;
+}
+ 
+/* ---------- Reporting ---------- */
+void generateUtilizationReport(Booking *bookings, int count) {
+    printf("\n================ LAB UTILIZATION REPORT ================\n");
+ 
+    printf("\n-- Pending High-Priority Bookings (priority 1) --\n");
+    int any = 0;
+    for (int i = 0; i < count; i++) {
+        if ((bookings + i)->priority == 1 &&
+            strcmp((bookings + i)->status, "Pending") == 0) {
+            displayBooking(bookings + i);
+            any = 1;
+        }
+    }
+    if (!any) printf("None.\n");
+ 
+    printf("\n-- Equipment Hours Allocated vs Available --\n");
+    /* Deduplicate by equipmentID using a small local table (no globals).
+       Each booking stores its OWN snapshot of the equipment (a nested
+       struct), and cumulative allocatedHours only grows as later
+       bookings are added, so for each distinct equipment ID we must
+       report the LAST (most recent / highest) snapshot in the array,
+       not simply the first one encountered. */
+    int seenIDs[MAX_EQUIPMENT];
+    int lastIdx[MAX_EQUIPMENT];
+    int seenCount = 0;
+    for (int i = 0; i < count; i++) {
+        int id = (bookings + i)->equipmentInfo.equipmentID;
+        int k;
+        for (k = 0; k < seenCount; k++)
+            if (seenIDs[k] == id) break;
+        if (k == seenCount) {
+            seenIDs[seenCount] = id;
+            lastIdx[seenCount] = i;
+            seenCount++;
+        } else {
+            lastIdx[k] = i;   /* keep the most recent snapshot */
+        }
+    }
+    for (int k = 0; k < seenCount; k++) {
+        Equipment *eq = &(bookings + lastIdx[k])->equipmentInfo;
+        printf("Equipment [%d] %-15s : %d / %d hours allocated (%s)\n",
+               eq->equipmentID, eq->name, eq->allocatedHours,
+               eq->maxHours, eq->status);
+    }
+ 
+    printf("\n-- Equipment Nearing Maximum Utilization (>=80%%) --\n");
+    any = 0;
+    for (int k = 0; k < seenCount; k++) {
+        Equipment *eq = &(bookings + lastIdx[k])->equipmentInfo;
+        double pct = (double)eq->allocatedHours / eq->maxHours * 100.0;
+        if (pct >= 80.0) {
+            printf("Equipment [%d] %s is at %.1f%% utilization.\n",
+                   eq->equipmentID, eq->name, pct);
+            any = 1;
+        }
+    }
+    if (!any) printf("None.\n");
+    printf("==========================================================\n");
+}
+ 
+/* ---------- Menu ---------- */
+void displayMenu(void) {
+    printf("\n===== Smart Lab Equipment Booking System =====\n");
+    printf("1. Add new booking\n");
+    printf("2. Search booking by ID\n");
+    printf("3. Sort bookings by priority\n");
+    printf("4. Sort bookings by date\n");
+    printf("5. Display all bookings\n");
+    printf("6. Generate utilization report\n");
+    printf("7. Save & Exit\n");
+    printf("Enter choice: ");
+}
+ 
+/* ---------- main: menu-driven, no global variables ---------- */
+int main(void) {
+    Booking bookings[MAX_BOOKINGS];
+    int count = loadBookingsFromFile(bookings);
+    int choice;
+ 
+    printf("Loaded %d booking record(s) from previous session.\n", count);
+ 
+    do {
+        displayMenu();
+        {
+            int rc = scanf("%d", &choice);
+            if (rc == EOF) {
+                printf("\nInput stream closed. Saving and exiting.\n");
+                saveBookingsToFile(bookings, count);
+                break;
+            }
+            if (rc != 1) {
+                int c;
+                while ((c = getchar()) != '\n' && c != EOF);
+                continue;
+            }
+        }
+ 
+        switch (choice) {
+            case 1:
+                addBooking(bookings, &count);
+                break;
+            case 2: {
+                int id, idx;
+                printf("Enter Booking ID to search: ");
+                scanf("%d", &id);
+                idx = searchBookingByID(bookings, count, id);
+                if (idx == -1)
+                    printf("Booking ID %d not found.\n", id);
+                else
+                    displayBooking(&bookings[idx]);
+                break;
+            }
+            case 3:
+                sortByPriority(bookings, count);
+                printf("Bookings sorted by priority.\n");
+                break;
+            case 4:
+                sortByDate(bookings, count);
+                printf("Bookings sorted by date.\n");
+                break;
+            case 5:
+                displayAllBookings(bookings, count);
+                break;
+            case 6:
+                generateUtilizationReport(bookings, count);
+                break;
+            case 7:
+                saveBookingsToFile(bookings, count);
+                printf("Goodbye.\n");
+                break;
+            default:
+                printf("Invalid choice, try again.\n");
+        }
+    } while (choice != 7);
+ 
+    return 0;
+}
+ 
